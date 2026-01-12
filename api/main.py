@@ -30,6 +30,12 @@ def get_db():
     client = MongoClient(uri, server_api=ServerApi("1"))
 
     db = client["kplc"]
+
+    return db
+
+
+def save_token_data(token_data: list):
+    db = get_db()
     collection = db["token_bills"]
 
     # Unique compound index to prevent duplicates
@@ -38,18 +44,28 @@ def get_db():
         unique=True
     )
 
-    return collection
-
-
-def save_token_data(token_data: list):
-    collection = get_db()
-
     for item in token_data:
         try:
             collection.insert_one(item)
         except Exception:
             # Duplicate (same meter + timestamp) → ignore
             pass
+
+
+def save_meter_number(meter_number: str):
+    db = get_db()
+    collection = db["kplc_meters"]
+
+    # Unique compound index to prevent duplicates
+    collection.create_index(
+        [("meter_number", ASCENDING)],
+        unique=True
+    )
+    
+    try:
+        collection.insert_one({"meter_number": meter_number})
+    except Exception:
+        pass
 
 
 # ---------------- KPLC AUTH ----------------
@@ -132,8 +148,7 @@ async def fetch_token_bill_from_kplc(meter_number: str):
                 "timestamp": data.get("trnTimestamp"),
                 "tokenNo": data.get("tokenNo"),
                 "amount": data.get("trnAmount", 0),
-                "units": data.get("trnUnits"),
-                "created_at": datetime.utcnow()
+                "units": data.get("trnUnits")
             })
 
         return token_data
@@ -160,6 +175,7 @@ async def get_token_data(meter_number: str):
 
     params = {"serialNumberMeter": meter_number}
 
+    # Fetch & store bill data
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -168,7 +184,6 @@ async def get_token_data(meter_number: str):
                 headers=headers,
                 timeout=10.0
             )
-            # response.raise_for_status()
             response_data = response.json()
             data = response_data.get("data", [{}])[0]
             about_data = {
@@ -184,6 +199,8 @@ async def get_token_data(meter_number: str):
                         None
                     )
                 }
+            # save meter number
+            save_meter_number(meter_number)
             # 🔥 Fetch & store bill data as side-effect
             token_data = await fetch_token_bill_from_kplc(meter_number)
             save_token_data(token_data)
